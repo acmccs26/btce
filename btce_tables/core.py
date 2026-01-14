@@ -21,6 +21,29 @@ class UserType(Enum):
     DISGRUNTLED = 1 
     MALICIOUS = 2
     NEGLIGENT = 3 
+# ============================================================================
+# CONFIG MANAGEMENT
+# ============================================================================
+
+def globals():
+    """Return a dict of module-level globals for dynamic config updates."""
+    return globals()
+
+def set_globals(**kwargs):
+    """Set module-level variables from keyword arguments.
+    
+    Usage:
+        set_globals(NUM_USERS=5000, HORIZON=60)
+    """
+    import sys
+    mod = sys.modules[__name__]
+    for key, val in kwargs.items():
+        setattr(mod, key, val)
+
+# ============================================================================
+# UTILITIES
+# ============================================================================
+
 
 @dataclass
 class ChannelMetadata:
