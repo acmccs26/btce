@@ -3,9 +3,15 @@ import argparse, os, sys
 import numpy as np
 import pandas as pd
 
-# Ensure local import works when running from repo root
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from btce_tables import core
+from pathlib import Path
+
+# Add parent directory to path so btce_tables can be imported
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Now import btce_tables
+import btce_tables.core as core
+# ... rest of imports ...
+
 
 def _as_float_list(xs):
     return [float(x) for x in xs]
@@ -24,8 +30,9 @@ def main():
     rows = []
     for seed in range(args.n_runs):
         core.set_seed(seed)
-        core.globals()["NUM_USERS"] = args.n_users
-        core.globals()["BEHAVIOR_MODE"] = "behavioral"
+        # NEW (works):
+        core.set_globals(NUM_USERS=args.n_users)
+        core.set_globals(BEHAVIOR_MODE = "behavioral")
 
         df = core.run_simulation(args.ft)
         df = core.add_killchain_labels(df)

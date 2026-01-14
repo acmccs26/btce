@@ -38,8 +38,8 @@ def main():
     for seed in range(args.n_runs):
         # Behavioral
         core.set_seed(seed)
-        core.globals()["NUM_USERS"] = args.n_users
-        core.globals()["BEHAVIOR_MODE"] = "behavioral"
+        core.set_globals(NUM_USERS=args.n_users)
+        core.set_globals(BEHAVIOR_MODE = "behavioral")
         df_b = core.run_simulation(args.ft)
         df_b = core.add_killchain_labels(df_b)
         df_b["P_Detect"] = df_b["P_Detect"].astype(float)

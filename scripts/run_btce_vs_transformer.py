@@ -32,8 +32,8 @@ def main():
     for seed in range(args.n_runs):
         # build the BTCE dataframe (behavioral) and split users
         core.set_seed(seed)
-        core.globals()["NUM_USERS"] = args.n_users
-        core.globals()["BEHAVIOR_MODE"] = "behavioral"
+        core.set_globals(NUM_USERS=args.n_users)
+        core.set_globals(BEHAVIOR_MODE = "behavioral")
         df = core.run_simulation(args.ft)
         df = core.add_killchain_labels(df)
         df["P_Detect"] = df["P_Detect"].astype(float)
