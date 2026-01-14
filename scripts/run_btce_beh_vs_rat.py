@@ -46,8 +46,7 @@ def main():
 
         # Rational (same seed so the target cohort aligns under your code path)
         core.set_seed(seed)
-        core.globals()["NUM_USERS"] = args.n_users
-        core.globals()["BEHAVIOR_MODE"] = "rational"
+        core.set_globals(BEHAVIOR_MODE = "rational")
         df_r = core.run_simulation(args.ft)
         df_r = core.add_killchain_labels(df_r)
         df_r["P_Detect"] = df_r["P_Detect"].astype(float)
