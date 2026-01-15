@@ -3,6 +3,8 @@ import argparse, os, sys
 import numpy as np
 import pandas as pd
 
+import warnings
+warnings.filterwarnings('ignore')
 # Ensure local import works when running from repo root
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from btce_tables import core

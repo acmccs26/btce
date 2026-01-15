@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 
 from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore')
 
 # Add parent directory to path so btce_tables can be imported
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -15,7 +17,8 @@ import btce_tables.core as core
 
 def _as_float_list(xs):
     return [float(x) for x in xs]
-
+import warnings
+warnings.filterwarnings('ignore')
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--thresholds", nargs="+", required=True, type=float)

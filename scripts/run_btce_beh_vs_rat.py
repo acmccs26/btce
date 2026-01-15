@@ -3,6 +3,8 @@ import argparse, os, sys
 import numpy as np
 import pandas as pd
 
+import warnings
+warnings.filterwarnings('ignore')
 # Ensure local import works when running from repo root
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from btce_tables import core
@@ -10,11 +12,11 @@ from btce_tables import core
 def _as_float_list(xs):
     return [float(x) for x in xs]
 
-def _timing_only(df, theta):
+def _timing_only(df, theta, label_col, attack_def, timing_scope):
     # Use user_preexfil objective to compute timing stats, but we will only export timing fields.
     m = core.user_level_metrics(
         df, score_col="P_Detect", theta=theta,
-        label_col="y_killchain", attack_def="killchain", timing_scope="label",
+        label_col=label_col, attack_def=attack_def, timing_scope=timing_scope,
         f1_mode="user_preexfil"
     )
     # Clamp deltas to be non-negative for reporting (avoid negative deltas in tables).
@@ -44,7 +46,7 @@ def main():
         df_b = core.add_killchain_labels(df_b)
         df_b["P_Detect"] = df_b["P_Detect"].astype(float)
 
-        # Rational (same seed so the target cohort aligns under your code path)
+        # Rational (same seed so the target cohort aligns under code path)
         core.set_seed(seed)
         core.set_globals(BEHAVIOR_MODE = "rational")
         df_r = core.run_simulation(args.ft)
@@ -52,8 +54,8 @@ def main():
         df_r["P_Detect"] = df_r["P_Detect"].astype(float)
 
         for th in thresholds:
-            dm_b, dmed_b, mttd_b = _timing_only(df_b, th)
-            dm_r, dmed_r, mttd_r = _timing_only(df_r, th)
+            dm_b, dmed_b, mttd_b = _timing_only(df_b, th, label_col="y_killchain", attack_def="killchain", timing_scope="label")
+            dm_r, dmed_r, mttd_r = _timing_only(df_r, th, label_col="IsTarget", attack_def="exfil", timing_scope="any")
 
             rows.append({
                 "seed": seed,
