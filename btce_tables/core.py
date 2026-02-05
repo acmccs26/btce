@@ -525,7 +525,7 @@ class ByzantineCommittee:
                     vote = np.clip(anchor_post + np.random.normal(0, 0.02), 0.01, 0.99)
                 else:
                     # Near or above threshold: aggressively under-report
-                    # SACC will clip this to (anchor_post - SACC_GAMMA),
+                    # clipping rule median will clip this to (anchor_post - SACC_GAMMA),
                     # maximizing downward pull inside the allowed band.
                     vote = anchor_post - 10 * SACC_GAMMA
 
@@ -590,13 +590,155 @@ class ByzantineCommittee:
 # ============================================================================
 # 7. MAIN
 # ============================================================================
+# =========================
+# Regret / ε-obedience instrumentation
+# =========================
+
+RECON_PAYOFF_FRAC = 0.25  # simple fixed mapping: RECON yields a fraction of attack utility
+MISSING_PROB = 0.05  
+
+def _intrinsic_payoff(theta: dict, action: str) -> float:
+    if action == "NORMAL":
+        return float(theta["trust_utility"])
+    if action == "RECON":
+        return float(RECON_PAYOFF_FRAC * theta["attack_utility"])
+    if action == "EXFIL":
+        return float(theta["attack_utility"])
+    return 0.0
+
+def _sample_signals_counterfactual(action: str, *, is_target: bool, rng) -> tuple[np.ndarray, int | None]:
+    """
+    Samples a signal vector for a counterfactual action WITHOUT consuming global RNG.
+    Returns: (signals, pool_idx_or_None).
+    """
+    global SIGNAL_POOLS, MISSING_PROB
+    if SIGNAL_POOLS is not None:
+        pool = SIGNAL_POOLS[action]
+        j = int(rng.integers(0, pool.shape[0]))
+        sig = pool[j].astype(float).copy()
+        return sig, j
+
+    # --- synthetic fallback (mirrors UserAgent.generate_signals distributions) ---
+    if action == "NORMAL":
+        base = rng.beta(NORMAL_ALPHA, NORMAL_BETA, size=4)
+        s_exfil = rng.beta(1, 30)
+    elif action == "RECON":
+        base = rng.beta(RECON_ALPHA, RECON_BETA, size=4)
+        base += 0.15
+        s_exfil = rng.beta(1, 30)
+    else:  # "EXFIL"
+        base = rng.beta(EXFIL_ALPHA, EXFIL_BETA, size=4)
+        base += 0.35
+        s_exfil = rng.beta(15, 2)
+
+    if is_target and action in ("RECON", "EXFIL"):
+        base[2] = min(1.0, base[2] + 0.25)   # Priv channel bump
+        if action == "EXFIL":
+            s_exfil = min(1.0, s_exfil + 0.2)
+
+    base = np.clip(base + rng.normal(0, 0.05, size=4), 0.0, 1.0)
+    s_exfil = float(np.clip(s_exfil + rng.normal(0, 0.02), 0.0, 1.0))
+
+    email_split = float(rng.uniform(0.4, 0.6))
+    s_email  = float(base[2] * email_split)
+    s_device = float(base[2] * (1.0 - email_split))
+
+    signals = np.array([base[0], base[1], s_email, s_device, s_exfil], dtype=float)
+
+    # Missingness (matches sim)
+    if MISSING_PROB > 0.0:
+        mask = rng.random(signals.shape) < float(MISSING_PROB)
+        signals[mask] = 0.0
+
+    return signals, None
+
+def _expected_committee_belief_from_anchor(prior: float, anchor_post: float, *, ft: int, is_malicious: bool) -> float:
+    """
+    Cheap expectation proxy for committee aggregation (avoids mutating committee state).
+    Mirrors the *direction* of Byzantine pull in certify().
+    """
+    global AGG_MODE, SACC_GAMMA, THRESHOLD, N_MEMBERS
+
+    alpha = 0.4
+    risk_band_low = float(THRESHOLD - SACC_GAMMA)
+
+    core = float(anchor_post)
+
+    if AGG_MODE == "median":
+        core = float(anchor_post)  # robust when ft < m/2
+    else:
+        # In anchor_clip/average regimes, traitors pull in opposite directions in high-risk band.
+        if ft > 0 and anchor_post >= risk_band_low:
+            direction = -1.0 if is_malicious else +1.0
+            # anchor_clip effectively limits each traitor to ~±SACC_GAMMA influence in expectation
+            if AGG_MODE == "anchor_clip":
+                core = float(anchor_post + direction * (ft / float(N_MEMBERS)) * float(SACC_GAMMA))
+            elif AGG_MODE == "average":
+                core = float(anchor_post + direction * (ft / float(N_MEMBERS)) * float(10.0 * SACC_GAMMA))
+            else:
+                core = float(anchor_post)
+
+    sys_belief = (1.0 - alpha) * float(prior) + alpha * float(core)
+    return float(np.clip(sys_belief, 0.01, 0.99))
+
+def estimate_bar_p(dbn, prior: float, action: str, *, ft: int, is_target: bool, is_malicious: bool,
+                   n_mc: int = 10, seed: int = 0) -> float:
+    """
+    Monte Carlo estimate of \\bar p_t(action): expected system belief after taking 'action'
+    starting from 'prior', using DBN likelihoods + expected committee aggregation proxy.
+    """
+    rng = np.random.default_rng(seed)
+    ps = []
+
+    for _ in range(int(n_mc)):
+        signals, pool_idx = _sample_signals_counterfactual(action, is_target=is_target, rng=rng)
+
+        ll_m = dbn.ll_cached(signals, UserType.MALICIOUS, pool_action=action, pool_idx=pool_idx)
+        ll_l = dbn.ll_cached(signals, UserType.LOYAL,     pool_action=action, pool_idx=pool_idx)
+
+        lr = float(np.exp(ll_m - ll_l))
+        anchor_post = (float(prior) * lr) / (float(prior) * lr + (1.0 - float(prior)))
+
+        ps.append(_expected_committee_belief_from_anchor(prior, anchor_post, ft=ft, is_malicious=is_malicious))
+
+    return float(np.mean(ps)) if ps else float(prior)
+
+def one_step_obedience_regret(agent, dbn, prior: float, *, ft: int,
+                             rec_action: str = "NORMAL",
+                             actions: tuple[str, ...] = ("NORMAL", "RECON", "EXFIL"),
+                             n_mc: int = 10,
+                             seed: int = 0):
+    """
+    Returns:
+      regret, best_action, W_rec, W_best, (optional) dict of W
+    """
+    is_malicious = (agent.type == UserType.MALICIOUS)
+    is_target = bool(agent.is_target)
+
+    risk_tolerance = 0.2 + 0.1 * float(agent.ref_point)
+    C_eff = float(agent.theta["detection_cost"]) * (1.0 / float(risk_tolerance))
+
+    W = {}
+    for a in actions:
+        bar_p = estimate_bar_p(dbn, prior, a, ft=ft, is_target=is_target, is_malicious=is_malicious,
+                               n_mc=n_mc, seed=(seed * 1000003 + hash(a) % 99991))
+        rho = _intrinsic_payoff(agent.theta, a)
+        W[a] = float(rho - C_eff * bar_p)
+
+    if rec_action not in W:
+        raise ValueError(f"rec_action={rec_action} must be in actions={actions}")
+
+    best_a = max(W, key=W.get)
+    regret = float(W[best_a] - W[rec_action])
+    return regret, best_a, float(W[rec_action]), float(W[best_a]), W
 
 
 # ============================================================================
 # 5. SIMULATION LOOP
 # ============================================================================
 
-def run_simulation(ft):
+def run_simulation(ft, log_regret=False, regret_n_mc=10, regret_actions=("NORMAL","RECON","EXFIL"),
+                   regret_rec_action="NORMAL", regret_seed=0):
     channels = {
         's_logon':  ChannelMetadata(0, 's_logon',  'Access', 0.6, ll_weight=1.0),
         's_file':   ChannelMetadata(1, 's_file',   'Recon',  0.7, ll_weight=1.0),
@@ -631,6 +773,20 @@ def run_simulation(ft):
             
             # Action & Signals
             current_belief = committee.user_beliefs.get(uid, 0.01)
+
+            regret = best_a = W_rec = W_best = None
+            if log_regret:
+                # deterministic seed so regret logging doesn't perturb the sim RNG stream
+                local_seed = int(regret_seed + 1315423911 * (t + 1) + 2654435761 * (uid + 1))
+                regret, best_a, W_rec, W_best, _ = one_step_obedience_regret(
+                    agent, committee.dbn, current_belief,
+                    ft=ft,
+                    rec_action=regret_rec_action,
+                    actions=tuple(regret_actions),
+                    n_mc=int(regret_n_mc),
+                    seed=local_seed
+                )
+
             action = agent.choose_action(current_belief)
             signals, pool_idx = agent.generate_signals(action, return_index=True)
             
@@ -674,7 +830,13 @@ def run_simulation(ft):
                 "s_device": float(s_device),
                 "s_exfil": float(s_exfil),
                 
-                'Honest_Mean': honest_mean
+                'Honest_Mean': honest_mean,
+                'Regret': regret,
+                'RegretBestAction': best_a,
+                'W_rec': W_rec,
+                'W_best': W_best,
+                'RegretRecAction': regret_rec_action,
+
             })
             
     return pd.DataFrame(logs)
