@@ -2,9 +2,10 @@
 
 This folder contains standalone Python scripts that reproduce the three empirical tables described in the Open Science Appendix:
 
-1. `scripts/run_btce_f1_modes.py` -> `results/table1_btce_f1_period_vs_userever.csv`
-2. `scripts/run_btce_beh_vs_rat.py` -> `results/table2_beh_vs_rat_timing.csv`
-3. `scripts/run_btce_vs_transformer.py` -> `results/table3_beh_vs_transformer_userearly.csv`
+1. `scripts/run_btce_f1_modes.bat` -> `results/table1_btce_f1_period_vs_userever.csv`
+2. `scripts/run_btce_beh_vs_rat.bat` -> `results/table2_beh_vs_rat_timing.csv`
+3. `scripts/run_btce_vs_transformer.bat` -> `results/table3_beh_vs_transformer_userearly.csv`
+4. `scripts/run_btce_regret.bat` -> `results/regret_timeseries_ft3.csv` and `results/regret_timeseries_ft9.csv`
 
 ## Quickstart
 
