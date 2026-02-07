@@ -309,6 +309,9 @@ class UserAgent:
         self.is_target = is_malicious_scenario
         self.type = UserType.LOYAL
         self.time = 0
+        self.active = True
+        self.caught_day: int | None = None
+
 
         # Stochastic start / peak times for attack progression
         self.start_day = np.random.randint(5, 15) if is_malicious_scenario else 999
@@ -763,12 +766,29 @@ def run_simulation(ft, log_regret=False, regret_n_mc=10, regret_actions=("NORMAL
     n_mal = int(NUM_USERS * PCT_MAL)
     
     agents = [UserAgent(i, is_malicious_scenario=(i < n_mal)) for i in range(NUM_USERS)]
+    for a in agents:
+        a.active = True
+        a.caught_day = None
+
 
     print(f"Running v21 Sim (Annotated CUSUM): {NUM_USERS} Users, {HORIZON} Steps")
 
     for t in range(HORIZON): # every day
         for uid in range(NUM_USERS): # each user is up to something
             agent = agents[uid]
+            if not getattr(agent, "active", True):
+                if log_regret and agent.is_target:
+                    logs.append({
+                        "Day": t,
+                        "AgentID": uid,
+                        "IsTarget": agent.is_target,
+                        "Regret": 0.0,              
+                        "Intervention": "REMOVED",
+                        "CaughtDay": agent.caught_day,
+                    })
+                continue
+
+
             agent.update_state(t)
             
             # Action & Signals
@@ -776,16 +796,21 @@ def run_simulation(ft, log_regret=False, regret_n_mc=10, regret_actions=("NORMAL
 
             regret = best_a = W_rec = W_best = None
             if log_regret:
+                regret = None
+                best_a = None
+                W_rec = None
+                W_best = None
                 # deterministic seed so regret logging doesn't perturb the sim RNG stream
                 local_seed = int(regret_seed + 1315423911 * (t + 1) + 2654435761 * (uid + 1))
-                regret, best_a, W_rec, W_best, _ = one_step_obedience_regret(
-                    agent, committee.dbn, current_belief,
-                    ft=ft,
-                    rec_action=regret_rec_action,
-                    actions=tuple(regret_actions),
-                    n_mc=int(regret_n_mc),
-                    seed=local_seed
-                )
+                if agent.active:
+                    regret, best_a, W_rec, W_best, _ = one_step_obedience_regret(
+                        agent, committee.dbn, current_belief,
+                        ft=ft,
+                        rec_action=regret_rec_action,
+                        actions=tuple(regret_actions),
+                        n_mc=int(regret_n_mc),
+                        seed=local_seed
+                    )
 
             action = agent.choose_action(current_belief)
             signals, pool_idx = agent.generate_signals(action, return_index=True)
@@ -800,6 +825,15 @@ def run_simulation(ft, log_regret=False, regret_n_mc=10, regret_actions=("NORMAL
             is_malicious = (agent.type == UserType.MALICIOUS)
             
             p_mal = committee.certify(uid, signals, ft, is_malicious=is_malicious, pool_action=action, pool_idx=pool_idx, ll_m=ll_mal, ll_l=ll_loy)
+            # --- Intervention policy d_u^t (terminal action triggers removal) ---
+            if p_mal >= THRESHOLD:
+                d_u_t = "REVOKE"
+                if agent.caught_day is None:
+                    agent.caught_day = t
+                agent.active = False
+            else:
+                d_u_t = "ALLOW"
+
             its = committee.dbn.its_cached(signals, pool_action=action, pool_idx=pool_idx)
             hist = committee.belief_history[uid]
 
@@ -836,6 +870,8 @@ def run_simulation(ft, log_regret=False, regret_n_mc=10, regret_actions=("NORMAL
                 'W_rec': W_rec,
                 'W_best': W_best,
                 'RegretRecAction': regret_rec_action,
+                'Intervention': d_u_t,
+                "CaughtDay": agent.caught_day
 
             })
             
