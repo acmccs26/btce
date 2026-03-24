@@ -17,7 +17,7 @@ if not exist "results" mkdir results
 
 echo.
 echo ====================================================================
-echo Running BTCE Table 1: Period-F1 vs UserEver-F1
+echo Running BTCE Period-F1 vs UserEver-F1
 echo ====================================================================
 python scripts/run_btce_f1_modes.py ^
   --thresholds !THRESHOLDS! ^
@@ -33,7 +33,7 @@ if errorlevel 1 (
 
 echo.
 echo ====================================================================
-echo Running BTCE Table 2: Behavioral vs Rational Timing
+echo Running BTCE Behavioral vs Rational Timing
 echo ====================================================================
 python scripts\run_btce_beh_vs_rat.py ^
   --thresholds !THRESHOLDS! ^
@@ -49,7 +49,7 @@ if errorlevel 1 (
 
 echo.
 echo ====================================================================
-echo Running BTCE Table 3: BTCE vs Transformer-UBS (UserEarly)
+echo Running BTCE BTCE vs Transformer-UBS (UserEarly)
 echo ====================================================================
 python scripts\run_btce_vs_transformer.py ^
   --thresholds !THRESHOLDS! ^
@@ -66,6 +66,25 @@ if errorlevel 1 (
   exit /b 1
 )
 
+
+echo.
+echo ====================================================================
+echo Running HOLMES-lite vs BTCE-Behavioral comparison
+echo ====================================================================
+python scripts\run_holmes_lite.py ^
+  --thresholds !THRESHOLDS! ^
+  --n_users !N_USERS! ^
+  --n_runs !N_RUNS! ^
+  --ft !FT! ^
+  --lookback 5 ^
+  --decay 0.8 ^
+  --out results/table_holmes_lite.csv
+
+if errorlevel 1 (
+  echo ERROR: HOLMES-lite evaluation failed. Exiting.
+  exit /b 1
+)
+
 echo.
 echo ====================================================================
 echo All tables generated successfully!
@@ -75,6 +94,7 @@ echo.
 echo Table 1: results/table1_btce_f1_period_vs_userever.csv
 echo Table 2: results/table2_beh_vs_rat_timing.csv
 echo Table 3: results/table3_beh_vs_transformer_userearly.csv
+echo Table 4: results/table_holmes_lite.csv
 echo.
 
 endlocal
