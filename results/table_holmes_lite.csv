@@ -1,0 +1,7 @@
+Method,theta,Pre-Exfil (%),Delta mean (days),Delta median (days),MTTD (days),User FP (%),Mal FN (%),F1
+BTCE-Behavioral,0.75,20.0,0.225,0.45,0.85,1.5727,0.0,0.0661
+BTCE-Behavioral,0.85,7.5,1.625,1.85,1.8,0.1316,0.0,0.1
+BTCE-Behavioral,0.9,0.0,2.85,2.9,2.85,0.0063,2.5,0.0
+HOLMESLite,0.75,5.0,-0.2,-0.15,0.05,0.3321,0.0,0.0444
+HOLMESLite,0.85,5.0,0.0,0.05,0.25,0.0376,0.0,0.0667
+HOLMESLite,0.9,0.0,0.3,0.25,0.3,0.0063,0.0,0.0
