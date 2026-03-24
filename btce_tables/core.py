@@ -76,6 +76,60 @@ EXFIL_ALPHA,  EXFIL_BETA  = 8.0, 2.0   # mean 0.80
 # We replace s_role with two channels: s_email and s_device.
 SIG_COLS = ["s_logon", "s_file", "s_email", "s_device", "s_exfil"]
 
+
+# =====================================================================
+# Merger / Acquisition covariate drift (single change-point)
+# =====================================================================
+# Models a covariate shift in BENIGN behavior due to a merger/acquisition:
+# new tools, new logon patterns, new devices, new email flows, etc.
+# By default we drift NORMAL behavior only (no malicious adaptation needed).
+MERGER_DAY: int | None = None          # e.g., 15 (day index in [0,HORIZON))
+MERGER_SHIFT: float = 0.12             # additive shift applied to selected channels post-merger
+MERGER_NOISE: float = 0.03             # additional Gaussian noise post-merger
+MERGER_CHANNELS = ("s_logon", "s_file", "s_email", "s_device")  # keep s_exfil stable
+MERGER_APPLY_ACTIONS = ("NORMAL",)     # apply drift only to benign-normal actions
+MERGER_APPLY_TO_TARGETS: bool = True   # env drift affects everyone unless set False
+
+def apply_merger_covariate_drift(
+    signals: np.ndarray,
+    *,
+    t: int,
+    action: str,
+    is_target: bool,
+    rng=None,
+) -> np.ndarray:
+    """Apply a single change-point covariate drift to a signal vector.
+
+    - If rng is provided (np.random.Generator), it is used for noise so counterfactual sampling
+      does not perturb the main simulation RNG stream.
+    """
+    global MERGER_DAY, MERGER_SHIFT, MERGER_NOISE, MERGER_CHANNELS
+    global MERGER_APPLY_ACTIONS, MERGER_APPLY_TO_TARGETS, SIG_COLS
+
+    if MERGER_DAY is None:
+        return signals
+    if int(t) < int(MERGER_DAY):
+        return signals
+    if str(action) not in set(map(str, MERGER_APPLY_ACTIONS)):
+        return signals
+    if (not MERGER_APPLY_TO_TARGETS) and bool(is_target):
+        return signals
+
+    out = signals.astype(float).copy()
+
+    idx = [SIG_COLS.index(c) for c in MERGER_CHANNELS if c in SIG_COLS]
+    if not idx:
+        return out
+
+    if rng is None:
+        eps = np.random.normal(0.0, float(MERGER_NOISE), size=len(idx))
+    else:
+        eps = rng.normal(0.0, float(MERGER_NOISE), size=len(idx))
+
+    out[idx] = np.clip(out[idx] + float(MERGER_SHIFT) + eps, 0.0, 1.0)
+    return out
+
+
 # If set, agents will sample signals from this action-conditioned pool CSV.
 SIGNAL_POOLS = None          # dict[action] -> np.ndarray shape (n_rows, len(SIG_COLS))
 SIGNAL_POOL_CSV_PATH = None
@@ -433,6 +487,8 @@ class UserAgent:
             pool = SIGNAL_POOLS[action]
             j = np.random.randint(0, pool.shape[0])
             sig = pool[j].copy()
+            # Merger covariate drift (single change-point)
+            sig = apply_merger_covariate_drift(sig, t=self.time, action=action, is_target=self.is_target)
             if return_index:
                 return sig, int(j)
             return sig
@@ -449,6 +505,8 @@ class UserAgent:
 
         s_logon, s_file, s_role_like, s_exfil = base
         sig = np.array([s_logon, s_file, s_role_like, s_role_like, s_exfil], dtype=float)
+        # Merger covariate drift (single change-point)
+        sig = apply_merger_covariate_drift(sig, t=self.time, action=action, is_target=self.is_target)
         if return_index:
             return sig, None
         return sig
@@ -609,7 +667,7 @@ def _intrinsic_payoff(theta: dict, action: str) -> float:
         return float(theta["attack_utility"])
     return 0.0
 
-def _sample_signals_counterfactual(action: str, *, is_target: bool, rng) -> tuple[np.ndarray, int | None]:
+def _sample_signals_counterfactual(action: str, *, is_target: bool, rng, t: int | None = None) -> tuple[np.ndarray, int | None]:
     """
     Samples a signal vector for a counterfactual action WITHOUT consuming global RNG.
     Returns: (signals, pool_idx_or_None).
@@ -619,6 +677,11 @@ def _sample_signals_counterfactual(action: str, *, is_target: bool, rng) -> tupl
         pool = SIGNAL_POOLS[action]
         j = int(rng.integers(0, pool.shape[0]))
         sig = pool[j].astype(float).copy()
+        if t is not None:
+            sig = apply_merger_covariate_drift(
+                sig, t=int(t), action=action, is_target=is_target, rng=rng
+            )
+
         return sig, j
 
     # --- synthetic fallback (mirrors UserAgent.generate_signals distributions) ---
@@ -653,6 +716,10 @@ def _sample_signals_counterfactual(action: str, *, is_target: bool, rng) -> tupl
         mask = rng.random(signals.shape) < float(MISSING_PROB)
         signals[mask] = 0.0
 
+    # Merger covariate drift for counterfactual sampling (uses rng for noise)
+    if t is not None:
+        signals = apply_merger_covariate_drift(signals, t=int(t), action=action, is_target=is_target, rng=rng)
+
     return signals, None
 
 def _expected_committee_belief_from_anchor(prior: float, anchor_post: float, *, ft: int, is_malicious: bool) -> float:
@@ -685,7 +752,7 @@ def _expected_committee_belief_from_anchor(prior: float, anchor_post: float, *, 
     return float(np.clip(sys_belief, 0.01, 0.99))
 
 def estimate_bar_p(dbn, prior: float, action: str, *, ft: int, is_target: bool, is_malicious: bool,
-                   n_mc: int = 10, seed: int = 0) -> float:
+                   n_mc: int = 10, seed: int = 0, t: int | None = None) -> float:
     """
     Monte Carlo estimate of \\bar p_t(action): expected system belief after taking 'action'
     starting from 'prior', using DBN likelihoods + expected committee aggregation proxy.
@@ -694,7 +761,7 @@ def estimate_bar_p(dbn, prior: float, action: str, *, ft: int, is_target: bool, 
     ps = []
 
     for _ in range(int(n_mc)):
-        signals, pool_idx = _sample_signals_counterfactual(action, is_target=is_target, rng=rng)
+        signals, pool_idx = _sample_signals_counterfactual(action, is_target=is_target, rng=rng, t=t)
 
         ll_m = dbn.ll_cached(signals, UserType.MALICIOUS, pool_action=action, pool_idx=pool_idx)
         ll_l = dbn.ll_cached(signals, UserType.LOYAL,     pool_action=action, pool_idx=pool_idx)
@@ -702,11 +769,12 @@ def estimate_bar_p(dbn, prior: float, action: str, *, ft: int, is_target: bool, 
         lr = float(np.exp(ll_m - ll_l))
         anchor_post = (float(prior) * lr) / (float(prior) * lr + (1.0 - float(prior)))
 
-        ps.append(_expected_committee_belief_from_anchor(prior, anchor_post, ft=ft, is_malicious=is_malicious))
+        ps.append(_expected_committee_belief_from_anchor(prior, anchor_post, ft=ft,
+                        is_malicious=is_malicious))
 
     return float(np.mean(ps)) if ps else float(prior)
 
-def one_step_obedience_regret(agent, dbn, prior: float, *, ft: int,
+def one_step_obedience_regret(agent, dbn, prior: float, *, ft: int, t: int | None = None,
                              rec_action: str = "NORMAL",
                              actions: tuple[str, ...] = ("NORMAL", "RECON", "EXFIL"),
                              n_mc: int = 10,
@@ -724,7 +792,7 @@ def one_step_obedience_regret(agent, dbn, prior: float, *, ft: int,
     W = {}
     for a in actions:
         bar_p = estimate_bar_p(dbn, prior, a, ft=ft, is_target=is_target, is_malicious=is_malicious,
-                               n_mc=n_mc, seed=(seed * 1000003 + hash(a) % 99991))
+                               n_mc=n_mc, seed=(seed * 1000003 + hash(a) % 99991), t=t)
         rho = _intrinsic_payoff(agent.theta, a)
         W[a] = float(rho - C_eff * bar_p)
 
@@ -1287,6 +1355,172 @@ def score_transformer(df, feat_cols, users, model,
                 out.append((uid, int(day), float(prob[b, i])))
 
     return pd.DataFrame(out, columns=["AgentID", "Day", "score"])
+
+
+def score_holmes_lite(df: pd.DataFrame,
+                      user_col="AgentID",
+                      day_col="Day",
+                      signal_cols=("s_logon", "s_file", "s_email", "s_device", "s_exfil"),
+                      lookback=5,
+                      decay=0.8,
+                      channel_weights=None,
+                      zscore_mode="train_users",
+                      train_users=None) -> pd.DataFrame:
+    """Streaming HOLMES-lite baseline using only raw observed channels.
+
+    Returns one score per (user, day) with columns: [AgentID, Day, score].
+    """
+    if df.empty:
+        return pd.DataFrame(columns=[user_col, day_col, "score"])
+
+    signal_cols = tuple(signal_cols)
+    missing = [c for c in (user_col, day_col, *signal_cols) if c not in df.columns]
+    if missing:
+        raise ValueError(f"score_holmes_lite missing required columns: {missing}")
+
+    d = (df[[user_col, day_col, *signal_cols]]
+         .groupby([user_col, day_col], as_index=False)
+         .mean())
+    d = d.sort_values([user_col, day_col]).reset_index(drop=True)
+
+    if channel_weights is None:
+        channel_weights = {
+            "s_logon": 1.0,
+            "s_file": 1.0,
+            "s_email": 1.0,
+            "s_device": 1.0,
+            "s_exfil": 2.5,
+        }
+    w = np.array([float(channel_weights.get(c, 1.0)) for c in signal_cols], dtype=float)
+    w = np.clip(w, 1e-8, None)
+    w = w / w.sum()
+
+    if zscore_mode == "train_users" and train_users is not None:
+        ref = d[d[user_col].isin(set(train_users))]
+        if ref.empty:
+            ref = d
+    else:
+        ref = d
+
+    mu = ref[list(signal_cols)].mean().to_numpy(dtype=float)
+    sd = ref[list(signal_cols)].std(ddof=0).to_numpy(dtype=float)
+    sd = np.where(sd < 1e-6, 1.0, sd)
+
+    X = d[list(signal_cols)].to_numpy(dtype=float)
+    z = (X - mu) / sd
+    # channel suspiciousness in [0,1], emphasizing right-tail anomalies
+    susp = np.clip(z / 3.0, 0.0, 1.0)
+
+    n = len(d)
+    scores = np.zeros(n, dtype=float)
+    lookback = int(max(1, lookback))
+    decay = float(np.clip(decay, 0.0, 0.999))
+
+    for _, idx in d.groupby(user_col, sort=False).groups.items():
+        idx = np.asarray(idx, dtype=int)
+        state = np.zeros(len(signal_cols), dtype=float)
+        hist = []
+
+        for k, i in enumerate(idx):
+            cur = susp[i]
+            state = decay * state + (1.0 - decay) * cur
+
+            hist.append(cur)
+            if len(hist) > lookback:
+                hist.pop(0)
+
+            # finite lookback decayed evidence (causal)
+            h = np.asarray(hist, dtype=float)
+            n_h = h.shape[0]
+            lam = decay ** np.arange(n_h - 1, -1, -1, dtype=float)
+            lam /= lam.sum()
+            roll = (h * lam[:, None]).sum(axis=0)
+
+            cur_w = float(np.dot(cur, w))
+            pers_w = float(np.dot(0.5 * state + 0.5 * roll, w))
+
+            high = cur >= 0.70
+            n_high = int(high.sum())
+            exfil_i = signal_cols.index("s_exfil") if "s_exfil" in signal_cols else -1
+            exfil_high = bool(exfil_i >= 0 and cur[exfil_i] >= 0.65)
+
+            interaction = 0.0
+            if n_high >= 2:
+                interaction += 0.08 * (n_high - 1)
+                if exfil_high:
+                    interaction += 0.12
+            elif exfil_high:
+                interaction += 0.04
+
+            score = 0.55 * cur_w + 0.35 * pers_w + interaction
+            scores[i] = float(np.clip(score, 0.0, 1.0))
+
+    out = d[[user_col, day_col]].copy()
+    out["score"] = scores
+    return out
+
+
+def eval_holmes_lite(df_btce,
+                     te_u,
+                     thresholds,
+                     user_col="AgentID",
+                     day_col="Day",
+                     signal_cols=("s_logon", "s_file", "s_email", "s_device", "s_exfil"),
+                     lookback=5,
+                     decay=0.8,
+                     channel_weights=None,
+                     zscore_mode="train_users",
+                     train_users=None,
+                     label_col="y_stage",
+                     attack_def="exfil",
+                     timing_scope="any"):
+    """Evaluate HOLMES-lite with existing user_level_metrics()."""
+    thresholds = ensure_iterable_thresholds(thresholds)
+    if train_users is None:
+        train_users = np.setdiff1d(df_btce[user_col].unique(), np.asarray(te_u))
+
+    df_score = score_holmes_lite(
+        df_btce,
+        user_col=user_col,
+        day_col=day_col,
+        signal_cols=signal_cols,
+        lookback=lookback,
+        decay=decay,
+        channel_weights=channel_weights,
+        zscore_mode=zscore_mode,
+        train_users=train_users,
+    )
+
+    df_test = df_btce[df_btce[user_col].isin(te_u)].copy()
+    df_test = df_test.merge(df_score, on=[user_col, day_col], how="left")
+    df_test["score"] = df_test["score"].fillna(0.0)
+    df_tmp = df_test.rename(columns={"score": "HolmesScore"})
+
+    rows = []
+    for th in thresholds:
+        m_early = user_level_metrics(
+            df_tmp,
+            score_col="HolmesScore",
+            theta=th,
+            label_col=label_col,
+            attack_def=attack_def,
+            timing_scope=timing_scope,
+            f1_mode="user_preexfil",
+        )
+        rows.append(("HOLMESLite - UserEarly", m_early))
+
+        m_ever = user_level_metrics(
+            df_tmp,
+            score_col="HolmesScore",
+            theta=th,
+            label_col=label_col,
+            attack_def=attack_def,
+            timing_scope=timing_scope,
+            f1_mode="user_ever",
+        )
+        rows.append(("HOLMESLite - UserEver", m_ever))
+
+    return rows, df_score, df_tmp
 
 
 
@@ -1903,4 +2137,3 @@ def run_table(N=4000,
     table_mean_std = table_mean_std[["Method", "N", "theta"] + metric_cols]
 
     return raw_runs, table_mean, tmp, table_mean_std
-
