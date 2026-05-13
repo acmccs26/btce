@@ -2,19 +2,20 @@
 
 This folder contains standalone Python scripts that reproduce the three empirical tables described in the Open Science Appendix:
 
-1. `scripts/run_btce_f1_modes.bat` -> `results/table1_btce_f1_period_vs_userever.csv`
-2. `scripts/run_btce_beh_vs_rat.bat` -> `results/table2_beh_vs_rat_timing.csv`
-3. `scripts/run_btce_vs_transformer.bat` -> `results/table3_beh_vs_transformer_userearly.csv`
-4. `scripts/run_btce_regret.bat` -> `results/regret_timeseries_ft3.csv` and `results/regret_timeseries_ft9.csv`
+1. `scripts\run_btce_f1_modes.bat` -> `results/table1_btce_f1_period_vs_userever.csv`
+2. `scripts\run_btce_beh_vs_rat.bat` -> `results/table2_beh_vs_rat_timing.csv`
+3. `scripts\run_btce_vs_transformer.bat` -> `results/table3_beh_vs_transformer_userearly.csv`
+4. `scripts\run_btce_regret.bat` -> `results/regret_timeseries_ft3.csv` and `results/regret_timeseries_ft9.csv`
+5. `scripts\run_btce_merger_day_sweep.bat` -> `results\merger_sweep_regret_ft3.csv` and `results\merger_sweep_regret_ft9.csv`, `results\merger_sweep_metrics_ft3.csv` and `results\merger_sweep_metrics_ft9.csv`
 
 ## Quickstart
 
-```bash
-python -m venv venv
-source venv/bin/activate
+```sh
+python.exe -m venv .venv 
+.\.venv\Scripts\activate
 pip install -r requirements.txt
-
-bash scripts/run_all_tables.sh
+.\scripts\run_all_tables.sh
+.\scripts\run_btce_merger_day_sweep.sh
 ```
 
 ## Notes
